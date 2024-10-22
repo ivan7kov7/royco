@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 pragma solidity ^0.8.0;
 
-import { ERC20 } from "../lib/solmate/src/tokens/ERC20.sol";
-import { ERC4626 } from "../lib/solmate/src/tokens/ERC4626.sol";
+import { ERC20 } from "lib/solmate/src/tokens/ERC20.sol";
+import { ERC4626 } from "lib/solmate/src/tokens/ERC4626.sol";
 import { WrappedVault } from "src/WrappedVault.sol";
 import { SafeTransferLib } from "lib/solmate/src/utils/SafeTransferLib.sol";
 import { Ownable2Step, Ownable } from "lib/openzeppelin-contracts/contracts/access/Ownable2Step.sol";
@@ -37,10 +37,10 @@ contract VaultMarketHub is Ownable2Step, ReentrancyGuardTransient {
 
     /// @notice The minimum time a campaign must run for before someone can be allocated into it
     uint256 public constant MIN_CAMPAIGN_DURATION = 1 weeks;
-    
+
     /// @notice whether offer fills are paused
     bool public offersPaused;
-    
+
     /// @dev The minimum quantity of tokens for an offer
     uint256 internal constant MINIMUM_QUANTITY = 1e6;
 
@@ -211,7 +211,7 @@ contract VaultMarketHub is Ownable2Step, ReentrancyGuardTransient {
         } else {
             // Get pre-withdraw token balance of VaultMarketHub
             uint256 preWithdrawTokenBalance = targetAsset.balanceOf(address(this));
-            
+
             // Withdraw from the funding vault to the VaultMarketHub
             ERC4626(offer.fundingVault).withdraw(fillAmount, address(this), offer.ap);
 
