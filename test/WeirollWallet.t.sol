@@ -4,52 +4,54 @@ pragma solidity ^0.8.0;
 import { WeirollWallet } from "src/WeirollWallet.sol";
 import { ClonesWithImmutableArgs } from "lib/clones-with-immutable-args/src/ClonesWithImmutableArgs.sol";
 import { Test } from "forge-std/Test.sol";
-import { VM } from "lib/weiroll/contracts/VM.sol";
+import { VM } from "lib/enso-weiroll/contracts/VM.sol";
+import { ECDSA } from "lib/solady/src/utils/ECDSA.sol";
 
 contract WeirollWalletTest is Test {
     using ClonesWithImmutableArgs for address;
 
     address public WEIROLL_WALLET_IMPLEMENTATION;
     WeirollWallet public wallet;
-    MockOrderbook public mockOrderbook;
+    MockRecipeMarketHub public mockRecipeMarketHub;
     address public owner;
     uint256 public constant AMOUNT = 1 ether;
     uint256 public lockedUntil;
-    uint256 public marketId;
+    bytes32 public marketHash;
 
     receive() external payable { }
 
     function setUp() public {
         WEIROLL_WALLET_IMPLEMENTATION = address(new WeirollWallet());
-        mockOrderbook = new MockOrderbook();
+        mockRecipeMarketHub = new MockRecipeMarketHub();
         owner = address(this);
         lockedUntil = block.timestamp + 1 days;
-        marketId = 0;
-        wallet = createWallet(owner, address(mockOrderbook), AMOUNT, lockedUntil, true, marketId);
+        marketHash = bytes32(hex"14beef");
+        wallet = createWallet(owner, address(mockRecipeMarketHub), AMOUNT, lockedUntil, true, marketHash);
     }
 
     function createWallet(
         address _owner,
-        address _orderbook,
+        address _recipeMarketHub,
         uint256 _amount,
         uint256 _lockedUntil,
         bool _isForfeitable,
-        uint256 _marketId
+        bytes32 _marketHash
     )
         public
         returns (WeirollWallet)
     {
-        return
-            WeirollWallet(payable(WEIROLL_WALLET_IMPLEMENTATION.clone(abi.encodePacked(_owner, _orderbook, _amount, _lockedUntil, _isForfeitable, _marketId))));
+        return WeirollWallet(
+            payable(WEIROLL_WALLET_IMPLEMENTATION.clone(abi.encodePacked(_owner, _recipeMarketHub, _amount, _lockedUntil, _isForfeitable, _marketHash)))
+        );
     }
 
     function testWalletInitialization() public view {
         assertEq(wallet.owner(), owner);
-        assertEq(wallet.orderbook(), address(mockOrderbook));
+        assertEq(wallet.recipeMarketHub(), address(mockRecipeMarketHub));
         assertEq(wallet.amount(), AMOUNT);
         assertEq(wallet.lockedUntil(), lockedUntil);
         assertTrue(wallet.isForfeitable());
-        assertEq(wallet.marketId(), marketId);
+        assertEq(wallet.marketHash(), marketHash);
         assertFalse(wallet.executed());
         assertFalse(wallet.forfeited());
     }
@@ -60,15 +62,15 @@ contract WeirollWalletTest is Test {
         wallet.manualExecuteWeiroll(new bytes32[](0), new bytes[](0));
     }
 
-    function testOnlyOrderbookModifier() public {
+    function testOnlyRecipeMarketHubModifier() public {
         vm.prank(address(0xdead));
-        vm.expectRevert(WeirollWallet.NotOrderbook.selector);
+        vm.expectRevert(WeirollWallet.NotRecipeMarketHub.selector);
         wallet.executeWeiroll(new bytes32[](0), new bytes[](0));
     }
 
     function testNotLockedModifier() public {
         uint256 shortLockTime = block.timestamp + 1 hours;
-        WeirollWallet lockedWallet = createWallet(owner, address(mockOrderbook), AMOUNT, shortLockTime, true, marketId);
+        WeirollWallet lockedWallet = createWallet(owner, address(mockRecipeMarketHub), AMOUNT, shortLockTime, true, marketHash);
 
         vm.expectRevert(WeirollWallet.WalletLocked.selector);
         lockedWallet.manualExecuteWeiroll(new bytes32[](0), new bytes[](0));
@@ -77,25 +79,11 @@ contract WeirollWalletTest is Test {
         vm.warp(shortLockTime + 1);
 
         // Execute Weiroll to set executed to true
-        vm.prank(address(mockOrderbook));
+        vm.prank(address(mockRecipeMarketHub));
         lockedWallet.executeWeiroll(new bytes32[](0), new bytes[](0));
 
         // This should now succeed as the wallet is unlocked and executed
         lockedWallet.manualExecuteWeiroll(new bytes32[](0), new bytes[](0));
-    }
-
-    function testExecuteWeiroll() public {
-        bytes32[] memory commands = new bytes32[](1);
-        bytes[] memory state = new bytes[](1);
-
-        assertFalse(wallet.executed());
-
-        vm.prank(address(mockOrderbook));
-        vm.expectRevert("Delegatecall is disabled");
-        wallet.executeWeiroll(commands, state);
-
-        // The executed flag should remain false
-        assertFalse(wallet.executed());
     }
 
     function testManualExecuteWeiroll() public {
@@ -108,13 +96,8 @@ contract WeirollWalletTest is Test {
         // Warp time to unlock the wallet
         vm.warp(lockedUntil + 1);
 
-        // Execute Weiroll to set executed to true
-        vm.prank(address(mockOrderbook));
-        vm.expectRevert("Delegatecall is disabled");
-        wallet.executeWeiroll(commands, state);
-
         // This should still fail because the wallet is not executed
-        vm.expectRevert("Royco: Order unfilled");
+        vm.expectRevert(abi.encodeWithSelector(WeirollWallet.OfferUnfilled.selector));
         wallet.manualExecuteWeiroll(commands, state);
     }
 
@@ -130,7 +113,7 @@ contract WeirollWalletTest is Test {
         vm.warp(lockedUntil + 1);
 
         // Execute Weiroll to set executed to true
-        vm.prank(address(mockOrderbook));
+        vm.prank(address(mockRecipeMarketHub));
         wallet.executeWeiroll(new bytes32[](0), new bytes[](0));
 
         // Check if the wallet is now executed
@@ -145,19 +128,19 @@ contract WeirollWalletTest is Test {
 
         // Test with a reverting call
         vm.mockCallRevert(target, value, data, "Mock revert");
-        vm.expectRevert("Generic execute proxy failed");
+        vm.expectRevert(abi.encodeWithSelector(WeirollWallet.RawExecutionFailed.selector));
         wallet.execute(target, value, data);
     }
 
     function testForfeit() public {
         assertFalse(wallet.forfeited());
-        mockOrderbook.forfeitWallet(wallet);
+        mockRecipeMarketHub.forfeitWallet(wallet);
         assertTrue(wallet.forfeited());
 
         // Test non-forfeitable wallet
-        WeirollWallet nonForfeitableWallet = createWallet(owner, address(mockOrderbook), AMOUNT, lockedUntil, false, marketId);
+        WeirollWallet nonForfeitableWallet = createWallet(owner, address(mockRecipeMarketHub), AMOUNT, lockedUntil, false, marketHash);
         vm.expectRevert(WeirollWallet.WalletNotForfeitable.selector);
-        MockOrderbook(mockOrderbook).forfeitWallet(nonForfeitableWallet);
+        MockRecipeMarketHub(mockRecipeMarketHub).forfeitWallet(nonForfeitableWallet);
     }
 
     function testReceiveEther() public {
@@ -171,9 +154,46 @@ contract WeirollWalletTest is Test {
         // Check if the balance increased
         assertEq(address(wallet).balance, initialBalance + 1 ether);
     }
+
+    function testIsValidSignatureFuzz(uint256 ownerPrivateKey, bytes32 digest, bytes memory signature) public {
+        // Avoid using zero private key and have it be in the correct range for secp256k1 SKs
+        vm.assume(
+            ownerPrivateKey != 0 && ownerPrivateKey < 115_792_089_237_316_195_423_570_985_008_687_907_852_837_564_279_074_904_382_605_163_141_518_161_494_337
+        );
+        // Initialize owner address from the private key
+        owner = vm.addr(ownerPrivateKey);
+
+        // Create a new wallet with the fuzzed owner
+        wallet = createWallet(owner, address(mockRecipeMarketHub), AMOUNT, lockedUntil, true, marketHash);
+
+        // Modify digest for replay protection
+        bytes32 walletSpecificDigest = keccak256(abi.encode(digest, block.chainid, address(wallet)));
+
+        // Create a valid signature from the owner
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(ownerPrivateKey, walletSpecificDigest);
+        bytes memory validSignature = abi.encodePacked(r, s, v);
+
+        // Test valid signature
+        bytes4 validResult = wallet.isValidSignature(digest, validSignature);
+        bytes4 expectedMagicValue = 0x1626ba7e; // ERC1271_MAGIC_VALUE
+        assertEq(validResult, expectedMagicValue);
+
+        // Skip invalid signature lengths
+        if (signature.length != 64 && signature.length != 65) {
+            return;
+        }
+
+        // Test invalid signature
+        bytes4 invalidResult = wallet.isValidSignature(digest, signature);
+        assertEq(invalidResult, 0x00000000); // INVALID_SIGNATURE
+
+        // Ensure the owner address is correctly recovered
+        address recoveredSigner = ECDSA.recover(walletSpecificDigest, validSignature);
+        assertEq(recoveredSigner, owner);
+    }
 }
 
-contract MockOrderbook {
+contract MockRecipeMarketHub {
     function callWallet(WeirollWallet wallet, bytes32[] calldata commands, bytes[] calldata state) external payable returns (bytes[] memory) {
         return wallet.executeWeiroll(commands, state);
     }
